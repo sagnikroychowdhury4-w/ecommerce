@@ -6,75 +6,106 @@ from datetime import datetime, timedelta
 fake = Faker()
 
 DB_FILE = "ecommerce.db"
-TOTAL_RECORDS = 150_000
+TOTAL_REVIEWS = 150_000
+TOTAL_PRODUCTS = 500
 BATCH_SIZE = 10_000
 
-CATEGORIES = [
-    "Electronics", "Home & Kitchen", "Apparel", "Beauty & Personal Care",
-    "Sports & Outdoors", "Books", "Office Products"
-]
+CATEGORIES = {
+    "Electronics": ["Smartphone", "Wireless Earbuds", "Gaming Laptop", "Smart Watch", "4K TV", "Bluetooth Speaker"],
+    "Fashion": ["Slim Fit Jeans", "Cotton T-Shirt", "Running Shoes", "Leather Jacket", "Sneakers", "Chronograph Watch"],
+    "Home & Kitchen": ["Air Fryer", "Coffee Maker", "Robot Vacuum", "Non-Stick Pan Set", "Blender", "Toaster Oven"],
+    "Beauty": ["Moisturizing Cream", "Vitamin C Serum", "Hair Dryer", "Sunscreen SPF 50", "Electric Toothbrush"],
+    "Sports": ["Yoga Mat", "Adjustable Dumbbells", "Resistance Bands", "Camping Tent", "Water Bottle"]
+}
 
-SENTIMENT_SNIPPETS = {
-    1: ["Terrible quality.", "Broke on day one.", "Do not buy.", "Total waste of money."],
-    2: ["Disappointed.", "Arrived damaged.", "Not as advertised.", "Subpar build."],
-    3: ["Decent, but has flaws.", "Average quality.", "Okay for the price.", "Works as expected."],
-    4: ["Pretty good overall.", "Fast delivery, minor scuffs.", "Solid purchase.", "Satisfied."],
-    5: ["Outstanding!", "Exceeded expectations!", "Must buy, absolutely love it.", "Five stars!"]
+SENTIMENT_TEMPLATES = {
+    1: ["Terrible quality.", "Broke down within two days.", "Complete waste of money.", "Do not purchase."],
+    2: ["Disappointed with this.", "Poor packaging, item had scuffs.", "Does not match the pictures.", "Subpar build."],
+    3: ["Decent for what it costs.", "Average build quality.", "Does the job, but nothing special.", "Mixed feelings."],
+    4: ["Solid purchase.", "Good value for money.", "Delivery was fast and product works well.", "Satisfied overall."],
+    5: ["Outstanding quality!", "Best in this price segment.", "Exceeded all expectations!", "Highly recommended!"]
 }
 
 def init_db(conn):
     cursor = conn.cursor()
+    cursor.execute("DROP TABLE IF EXISTS reviews;")
+    cursor.execute("DROP TABLE IF EXISTS products;")
+
+    # Products Table
     cursor.execute("""
-    CREATE TABLE IF NOT EXISTS reviews (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        product_id TEXT NOT NULL,
-        product_name TEXT NOT NULL,
-        product_category TEXT NOT NULL,
-        user_id TEXT NOT NULL,
-        user_name TEXT NOT NULL,
-        rating INTEGER NOT NULL,
-        review_title TEXT,
-        review_body TEXT,
-        helpful_votes INTEGER DEFAULT 0,
-        verified_purchase BOOLEAN NOT NULL,
-        created_at TEXT NOT NULL
+    CREATE TABLE products (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        category TEXT NOT NULL,
+        brand TEXT NOT NULL,
+        price REAL NOT NULL,
+        rating_avg REAL DEFAULT 0.0,
+        review_count INTEGER DEFAULT 0,
+        image_url TEXT NOT NULL
     );
     """)
-    # Index for fast pagination and filtering
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_reviews_product ON reviews(product_id);")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_reviews_rating ON reviews(rating);")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_reviews_created ON reviews(created_at);")
+
+    # Reviews Table
+    cursor.execute("""
+    CREATE TABLE reviews (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        product_id TEXT NOT NULL,
+        user_name TEXT NOT NULL,
+        rating INTEGER NOT NULL,
+        review_title TEXT NOT NULL,
+        review_body TEXT NOT NULL,
+        verified_purchase BOOLEAN NOT NULL,
+        helpful_count INTEGER DEFAULT 0,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (product_id) REFERENCES products(id)
+    );
+    """)
+
+    cursor.execute("CREATE INDEX idx_reviews_prod ON reviews(product_id);")
+    cursor.execute("CREATE INDEX idx_reviews_rating ON reviews(rating);")
     conn.commit()
 
-def generate_records():
-    # Pre-generate 500 catalog items to distribute reviews across
-    catalog = [
-        (f"PROD-{i:04d}", fake.catch_phrase(), random.choice(CATEGORIES))
-        for i in range(1, 501)
-    ]
+def seed_products(conn):
+    cursor = conn.cursor()
+    products = []
+    
+    for i in range(1, TOTAL_PRODUCTS + 1):
+        cat = random.choice(list(CATEGORIES.keys()))
+        item_type = random.choice(CATEGORIES[cat])
+        brand = fake.company()
+        title = f"{brand} {item_type} - {fake.word().capitalize()} Edition"
+        prod_id = f"PROD-{i:04d}"
+        price = round(random.uniform(15.99, 899.99), 2)
+        image_url = f"https://picsum.photos/seed/{prod_id}/400/400"
 
+        products.append((prod_id, title, cat, brand, price, 0.0, 0, image_url))
+
+    cursor.executemany("""
+    INSERT INTO products (id, title, category, brand, price, rating_avg, review_count, image_url)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    """, products)
+    conn.commit()
+    return [p[0] for p in products]
+
+def generate_reviews(product_ids):
     base_time = datetime.now()
     batch = []
-
-    for i in range(1, TOTAL_RECORDS + 1):
-        prod = random.choice(catalog)
-        rating = random.choices([1, 2, 3, 4, 5], weights=[8, 12, 20, 35, 25])[0]
-        review_text = f"{random.choice(SENTIMENT_SNIPPETS[rating])} {fake.paragraph(nb_sentences=2)}"
-        
-        days_ago = random.randint(0, 730)
+    
+    for _ in range(TOTAL_REVIEWS):
+        prod_id = random.choice(product_ids)
+        rating = random.choices([1, 2, 3, 4, 5], weights=[8, 10, 18, 38, 26])[0]
+        review_body = f"{random.choice(SENTIMENT_TEMPLATES[rating])} {fake.paragraph(nb_sentences=2)}"
+        days_ago = random.randint(0, 720)
         review_date = (base_time - timedelta(days=days_ago, seconds=random.randint(0, 86400))).isoformat()
 
         batch.append((
-            prod[0],
-            prod[1],
-            prod[2],
-            f"USER-{random.randint(1000, 99999)}",
+            prod_id,
             fake.name(),
             rating,
             fake.sentence(nb_words=4).rstrip('.'),
-            review_text,
-            random.choices([0, random.randint(1, 45)], weights=[70, 30])[0],
-            random.random() > 0.15,
+            review_body,
+            random.random() > 0.12,
+            random.choices([0, random.randint(1, 40)], weights=[75, 25])[0],
             review_date
         ))
 
@@ -90,20 +121,30 @@ def main():
     init_db(conn)
     cursor = conn.cursor()
 
-    print(f"Generating and seeding {TOTAL_RECORDS:,} synthetic records...")
+    print(f"1. Seeding {TOTAL_PRODUCTS} products...")
+    product_ids = seed_products(conn)
+
+    print(f"2. Seeding {TOTAL_REVIEWS:,} reviews...")
     total_inserted = 0
-    for chunk in generate_records():
+    for chunk in generate_reviews(product_ids):
         cursor.executemany("""
         INSERT INTO reviews (
-            product_id, product_name, product_category, user_id,
-            user_name, rating, review_title, review_body, helpful_votes,
-            verified_purchase, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            product_id, user_name, rating, review_title, 
+            review_body, verified_purchase, helpful_count, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """, chunk)
         conn.commit()
         total_inserted += len(chunk)
-        print(f"Inserted {total_inserted:,} / {TOTAL_RECORDS:,} records...")
+        print(f"   Inserted {total_inserted:,} / {TOTAL_REVIEWS:,} reviews...")
 
+    print("3. Recalculating product aggregate ratings and review counts...")
+    cursor.execute("""
+    UPDATE products 
+    SET 
+        rating_avg = ROUND((SELECT AVG(rating) FROM reviews WHERE reviews.product_id = products.id), 1),
+        review_count = (SELECT COUNT(*) FROM reviews WHERE reviews.product_id = products.id);
+    """)
+    conn.commit()
     conn.close()
     print("Database seeding completed.")
 
